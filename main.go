@@ -588,6 +588,8 @@ func runServe(args []string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndexPage)
+	mux.HandleFunc("/dice-mnemonic", handleDiceMnemonicPage)
+	mux.HandleFunc("/api/dice-mnemonic", handleAPIDiceMnemonic)
 	mux.HandleFunc("/api/encrypt", handleAPIEncrypt)
 	mux.HandleFunc("/api/decrypt", handleAPIDecrypt)
 	mux.HandleFunc("/api/split", handleAPISplit)
@@ -645,10 +647,11 @@ const indexPageHTML = `<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <header>
-    <h1>分片加密解密工具</h1>
-    <p>基于 Argon2id + AES-GCM 的安全加密，适用于 Shamir 分片。</p>
-  </header>
+	  <header>
+	    <h1>分片加密解密工具</h1>
+	    <p style="margin:8px 0 0;"><a href="/dice-mnemonic" style="color:#60a5fa; text-decoration:none;">➡️ 前往骰子助记词生成器</a></p>
+	    <p>基于 Argon2id + AES-GCM 的安全加密，适用于 Shamir 分片。</p>
+	  </header>
   <main>
     <div class="tabs">
       <div class="tab active" data-target="split">分片并加密</div>
@@ -935,6 +938,140 @@ const indexPageHTML = `<!DOCTYPE html>
 </body>
 </html>`
 
+const diceMnemonicPageHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>骰子助记词生成器</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#0f172a; margin:0; color:#e2e8f0; }
+    header { padding:18px 24px; background:#111827; display:flex; justify-content:space-between; align-items:center; }
+    header a { color:#60a5fa; text-decoration:none; font-weight:600; }
+    main { max-width:900px; margin:32px auto; background:rgba(15, 23, 42, 0.8); border-radius:16px; padding:32px; box-shadow:0 20px 60px rgba(8, 47, 73, 0.35); backdrop-filter:blur(18px); }
+    h1 { margin:0 0 8px; font-size:2rem; }
+    p { line-height:1.6; margin:0 0 16px; color:#cbd5f5; }
+    .actions { display:flex; gap:12px; align-items:center; margin-bottom:24px; flex-wrap:wrap; }
+    button { padding:12px 18px; border:none; border-radius:10px; background:#2563eb; color:#fff; font-size:1rem; cursor:pointer; font-weight:600; transition:all .2s ease; }
+    button:hover { transform:translateY(-1px); box-shadow:0 12px 25px rgba(37,99,235,0.35); background:#1d4ed8; }
+    button:active { transform:scale(0.98); }
+    .status { font-weight:600; }
+    pre { background:#020617; color:#f8fafc; padding:20px; border-radius:12px; min-height:180px; line-height:1.6; font-size:0.95rem; overflow:auto; box-shadow:inset 0 0 0 1px rgba(99,102,241,0.2); }
+    .mnemonic { margin-top:24px; display:flex; flex-wrap:wrap; gap:12px; }
+    .mnemonic span { background:#1e293b; padding:10px 14px; border-radius:10px; box-shadow:0 8px 20px rgba(15,23,42,0.35); font-weight:600; letter-spacing:0.05em; }
+    .grid { margin-top:24px; display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:16px; }
+    .card { background:#111c35; border-radius:12px; padding:16px; box-shadow:0 12px 28px rgba(30,64,175,0.35); }
+    .card h3 { margin-top:0; }
+    code { display:block; white-space:pre-wrap; word-break:break-all; background:#0f172a; padding:8px; border-radius:8px; margin-top:8px; font-size:0.9rem; }
+    @media (max-width:600px) {
+      main { margin:16px; padding:24px; }
+      h1 { font-size:1.6rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>骰子助记词生成器</h1>
+      <p>使用 50 次虚拟骰子生成 128 位熵，实时展示 BIP39 助记词与常见派生信息。</p>
+    </div>
+    <a href="/">返回分片工具</a>
+  </header>
+  <main>
+    <div class="actions">
+      <button id="generate-btn">重新生成</button>
+      <span id="status" class="status"></span>
+    </div>
+    <section>
+      <h2>输出内容</h2>
+      <pre id="output">⏳ 正在生成...</pre>
+    </section>
+    <section>
+      <h2>助记词</h2>
+      <div id="mnemonic-words" class="mnemonic"></div>
+    </section>
+    <section class="grid">
+      <div class="card">
+        <h3>BTC</h3>
+        <p><strong>地址</strong></p>
+        <code id="btc-address"></code>
+        <p><strong>私钥 (WIF)</strong></p>
+        <code id="btc-wif"></code>
+      </div>
+      <div class="card">
+        <h3>ETH</h3>
+        <p><strong>地址</strong></p>
+        <code id="eth-address"></code>
+        <p><strong>私钥 (hex)</strong></p>
+        <code id="eth-priv"></code>
+      </div>
+      <div class="card">
+        <h3>USDT (ERC20)</h3>
+        <p><strong>地址</strong></p>
+        <code id="usdt-address"></code>
+        <p><strong>BIP39 Seed (hex)</strong></p>
+        <code id="seed-hex"></code>
+      </div>
+    </section>
+  </main>
+  <script>
+    async function loadMnemonic() {
+      const statusEl = document.getElementById('status');
+      const outputEl = document.getElementById('output');
+      const mnemonicEl = document.getElementById('mnemonic-words');
+      const btcAddrEl = document.getElementById('btc-address');
+      const btcWifEl = document.getElementById('btc-wif');
+      const ethAddrEl = document.getElementById('eth-address');
+      const ethPrivEl = document.getElementById('eth-priv');
+      const usdtAddrEl = document.getElementById('usdt-address');
+      const seedHexEl = document.getElementById('seed-hex');
+
+      statusEl.textContent = '⏳ 正在生成...';
+      outputEl.textContent = '';
+      mnemonicEl.innerHTML = '';
+      btcAddrEl.textContent = '';
+      btcWifEl.textContent = '';
+      ethAddrEl.textContent = '';
+      ethPrivEl.textContent = '';
+      usdtAddrEl.textContent = '';
+      seedHexEl.textContent = '';
+
+      try {
+        const res = await fetch('/api/dice-mnemonic');
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || '生成失败');
+        }
+        const result = data.result || {};
+        const lines = result.output_lines || [];
+        outputEl.textContent = lines.join('\\n');
+        statusEl.textContent = '✅ 已生成 (骰子数量: ' + (result.num_dice || 0) + ')';
+
+        const words = result.mnemonic_words || [];
+        mnemonicEl.innerHTML = words.map(w => '<span>' + w + '</span>').join('');
+
+        btcAddrEl.textContent = result.btc_address || '';
+        btcWifEl.textContent = result.btc_wif || '';
+        ethAddrEl.textContent = result.eth_address || '';
+        ethPrivEl.textContent = result.eth_private_hex || '';
+        usdtAddrEl.textContent = result.usdt_address || '';
+        seedHexEl.textContent = result.seed_hex || '';
+      } catch (err) {
+        statusEl.textContent = '❌ ' + err.message;
+        outputEl.textContent = '';
+      }
+    }
+
+    document.getElementById('generate-btn').addEventListener('click', (e) => {
+      e.preventDefault();
+      loadMnemonic();
+    });
+
+    window.addEventListener('DOMContentLoaded', loadMnemonic);
+  </script>
+</body>
+</html>`
+
 func handleIndexPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -942,6 +1079,15 @@ func handleIndexPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, indexPageHTML)
+}
+
+func handleDiceMnemonicPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, diceMnemonicPageHTML)
 }
 
 type apiEncryptRequest struct {
@@ -990,6 +1136,10 @@ type apiRestoreResponse struct {
 	Secret      string `json:"secret"`
 	Threshold   int    `json:"threshold,omitempty"`
 	UsedIndices []int  `json:"used_indices"`
+}
+
+type apiDiceMnemonicResponse struct {
+	Result *DiceMnemonicResult `json:"result"`
 }
 
 func handleAPISplit(w http.ResponseWriter, r *http.Request) {
@@ -1312,6 +1462,21 @@ func handleAPIRestore(w http.ResponseWriter, r *http.Request) {
 		Threshold:   expectedThreshold,
 		UsedIndices: usedIndices,
 	})
+}
+
+func handleAPIDiceMnemonic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	result, err := GenerateDiceMnemonic()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, fmt.Errorf("生成骰子助记词失败: %w", err))
+		return
+	}
+
+	writeAPISuccess(w, apiDiceMnemonicResponse{Result: result})
 }
 
 func writeAPIError(w http.ResponseWriter, status int, err error) {

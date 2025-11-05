@@ -18,6 +18,27 @@ import (
 	bip39 "github.com/tyler-smith/go-bip39"
 )
 
+// DiceMnemonicResult 汇总骰子助记词生成的关键信息，便于 API 与页面展示。
+type DiceMnemonicResult struct {
+	Dice              []int    `json:"dice"`
+	DiceText          string   `json:"dice_text"`
+	EntropyBits       string   `json:"entropy_bits"`
+	ChecksumBits      string   `json:"checksum_bits"`
+	CombinedBits      string   `json:"combined_bits"`
+	Mnemonic          string   `json:"mnemonic"`
+	MnemonicWords     []string `json:"mnemonic_words"`
+	SeedHex           string   `json:"seed_hex"`
+	BTCAddress        string   `json:"btc_address"`
+	BTCWIF            string   `json:"btc_wif"`
+	ETHAddress        string   `json:"eth_address"`
+	ETHPrivateHex     string   `json:"eth_private_hex"`
+	USDTAddress       string   `json:"usdt_address"`
+	OutputLines       []string `json:"output_lines"`
+	NumDice           int      `json:"num_dice"`
+	EntropyBitLength  int      `json:"entropy_bit_length"`
+	ChecksumBitLength int      `json:"checksum_bit_length"`
+}
+
 // 生成随机骰子（1-6）
 func randomDice(n int) ([]int, error) {
 	dice := make([]int, n)
@@ -127,49 +148,43 @@ func ethAddressFromKey(key *hdkeychain.ExtendedKey) (string, string, error) {
 	return addr.Hex(), hex.EncodeToString(crypto.FromECDSA(ecdsaKey)), nil
 }
 
-func main1() {
-	entropyBytes, dice, err := generateEntropyFromDice(50, 128)
+// GenerateDiceMnemonic 基于 50 次骰子随机结果生成 128 位熵，并输出 12 个 BIP39 助记词等信息。
+func GenerateDiceMnemonic() (*DiceMnemonicResult, error) {
+	const (
+		numDice         = 50
+		entropyBitSize  = 128
+		bip39Passphrase = ""
+	)
+
+	entropyBytes, dice, err := generateEntropyFromDice(numDice, entropyBitSize)
 	if err != nil {
-		fmt.Println("生成熵失败:", err)
-		return
+		return nil, fmt.Errorf("生成熵失败: %w", err)
 	}
 
-	// 展示骰子序列
 	diceStr := make([]string, len(dice))
 	for i, d := range dice {
 		diceStr[i] = fmt.Sprintf("%d", d)
 	}
-	fmt.Println("接受的骰子序列:", strings.Join(diceStr, " "))
+	diceText := strings.Join(diceStr, " ")
 
-	entropyBin := bigIntToBinStr(new(big.Int).SetBytes(entropyBytes), 128)
+	entropyBin := bigIntToBinStr(new(big.Int).SetBytes(entropyBytes), entropyBitSize)
 
-	// SHA256（展示校验位）
 	h := sha256.Sum256(entropyBytes)
 	hashBin := bigIntToBinStr(new(big.Int).SetBytes(h[:]), 256)
-	checksumBits := 128 / 32
+	checksumBits := entropyBitSize / 32
 	checksum := hashBin[:checksumBits]
 	combined := entropyBin + checksum
 
 	mnemonic, err := bip39.NewMnemonic(entropyBytes)
 	if err != nil {
-		fmt.Println("生成助记词失败:", err)
-		return
+		return nil, fmt.Errorf("生成助记词失败: %w", err)
 	}
 
-	fmt.Println("熵 (bin,128位):", entropyBin)
-	fmt.Println("校验和:", checksum)
-	fmt.Println("拼接后 (132位):", combined)
-	fmt.Println("助记词 (12 个):")
-	fmt.Println(mnemonic)
-
-	seed := bip39.NewSeed(mnemonic, "")
-	fmt.Println("BIP39 种子 (hex, 无额外口令):", fmt.Sprintf("%x", seed))
-	fmt.Println("请在离线安全环境中运行，并考虑设置额外 BIP39 口令。")
+	seed := bip39.NewSeed(mnemonic, bip39Passphrase)
 
 	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
 	if err != nil {
-		fmt.Println("生成主扩展密钥失败:", err)
-		return
+		return nil, fmt.Errorf("生成主扩展密钥失败: %w", err)
 	}
 
 	const hardened = hdkeychain.HardenedKeyStart
@@ -177,30 +192,58 @@ func main1() {
 	btcPath := []uint32{44 + hardened, 0 + hardened, 0 + hardened, 0, 0}
 	btcKey, err := deriveChild(masterKey, btcPath)
 	if err != nil {
-		fmt.Println("派生 BTC 扩展密钥失败:", err)
-		return
+		return nil, fmt.Errorf("派生 BTC 扩展密钥失败: %w", err)
 	}
 	btcAddr, btcWIF, err := btcAddressFromKey(btcKey)
 	if err != nil {
-		fmt.Println("生成 BTC 地址失败:", err)
-		return
+		return nil, fmt.Errorf("生成 BTC 地址失败: %w", err)
 	}
 
 	ethPath := []uint32{44 + hardened, 60 + hardened, 0 + hardened, 0, 0}
 	ethKey, err := deriveChild(masterKey, ethPath)
 	if err != nil {
-		fmt.Println("派生 ETH 扩展密钥失败:", err)
-		return
+		return nil, fmt.Errorf("派生 ETH 扩展密钥失败: %w", err)
 	}
 	ethAddr, ethPrivHex, err := ethAddressFromKey(ethKey)
 	if err != nil {
-		fmt.Println("生成 ETH 地址失败:", err)
-		return
+		return nil, fmt.Errorf("生成 ETH 地址失败: %w", err)
 	}
 
-	fmt.Println("BTC 地址 (m/44'/0'/0'/0/0):", btcAddr)
-	fmt.Println("BTC 私钥 (WIF, compressed):", btcWIF)
-	fmt.Println("ETH 地址 (m/44'/60'/0'/0/0):", ethAddr)
-	fmt.Println("ETH 私钥 (hex):", ethPrivHex)
-	fmt.Println("USDT (ERC20/主网与 ETH 地址一致):", ethAddr)
+	lines := []string{
+		fmt.Sprintf("接受的骰子序列: %s", diceText),
+		fmt.Sprintf("熵 (bin,%d位): %s", entropyBitSize, entropyBin),
+		fmt.Sprintf("校验和: %s", checksum),
+		fmt.Sprintf("拼接后 (%d位): %s", len(combined), combined),
+		"助记词 (12 个):",
+		mnemonic,
+		fmt.Sprintf("BIP39 种子 (hex, 无额外口令): %x", seed),
+		"请在离线安全环境中运行，并考虑设置额外 BIP39 口令。",
+		fmt.Sprintf("BTC 地址 (m/44'/0'/0'/0/0): %s", btcAddr),
+		fmt.Sprintf("BTC 私钥 (WIF, compressed): %s", btcWIF),
+		fmt.Sprintf("ETH 地址 (m/44'/60'/0'/0/0): %s", ethAddr),
+		fmt.Sprintf("ETH 私钥 (hex): %s", ethPrivHex),
+		fmt.Sprintf("USDT (ERC20/主网与 ETH 地址一致): %s", ethAddr),
+	}
+
+	result := &DiceMnemonicResult{
+		Dice:              dice,
+		DiceText:          diceText,
+		EntropyBits:       entropyBin,
+		ChecksumBits:      checksum,
+		CombinedBits:      combined,
+		Mnemonic:          mnemonic,
+		MnemonicWords:     strings.Fields(mnemonic),
+		SeedHex:           fmt.Sprintf("%x", seed),
+		BTCAddress:        btcAddr,
+		BTCWIF:            btcWIF,
+		ETHAddress:        ethAddr,
+		ETHPrivateHex:     ethPrivHex,
+		USDTAddress:       ethAddr,
+		OutputLines:       lines,
+		NumDice:           numDice,
+		EntropyBitLength:  entropyBitSize,
+		ChecksumBitLength: checksumBits,
+	}
+
+	return result, nil
 }
