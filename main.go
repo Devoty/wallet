@@ -5,11 +5,16 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcutil/hdkeychain"
+	"github.com/ethereum/go-ethereum/crypto"
 	bip39 "github.com/tyler-smith/go-bip39"
 )
 
@@ -82,6 +87,46 @@ func bigIntToBinStr(n *big.Int, length int) string {
 	return bin[:length]
 }
 
+func deriveChild(master *hdkeychain.ExtendedKey, path []uint32) (*hdkeychain.ExtendedKey, error) {
+	key := master
+	var err error
+	for _, index := range path {
+		key, err = key.Child(index)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return key, nil
+}
+
+func btcAddressFromKey(key *hdkeychain.ExtendedKey) (string, string, error) {
+	priv, err := key.ECPrivKey()
+	if err != nil {
+		return "", "", err
+	}
+	compressedPubKey := priv.PubKey().SerializeCompressed()
+	hash160 := btcutil.Hash160(compressedPubKey)
+	addr, err := btcutil.NewAddressPubKeyHash(hash160, &chaincfg.MainNetParams)
+	if err != nil {
+		return "", "", err
+	}
+	wif, err := btcutil.NewWIF(priv, &chaincfg.MainNetParams, true)
+	if err != nil {
+		return "", "", err
+	}
+	return addr.EncodeAddress(), wif.String(), nil
+}
+
+func ethAddressFromKey(key *hdkeychain.ExtendedKey) (string, string, error) {
+	priv, err := key.ECPrivKey()
+	if err != nil {
+		return "", "", err
+	}
+	ecdsaKey := priv.ToECDSA()
+	addr := crypto.PubkeyToAddress(ecdsaKey.PublicKey)
+	return addr.Hex(), hex.EncodeToString(crypto.FromECDSA(ecdsaKey)), nil
+}
+
 func main() {
 	entropyBytes, dice, err := generateEntropyFromDice(50, 128)
 	if err != nil {
@@ -120,4 +165,42 @@ func main() {
 	seed := bip39.NewSeed(mnemonic, "")
 	fmt.Println("BIP39 种子 (hex, 无额外口令):", fmt.Sprintf("%x", seed))
 	fmt.Println("请在离线安全环境中运行，并考虑设置额外 BIP39 口令。")
+
+	masterKey, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		fmt.Println("生成主扩展密钥失败:", err)
+		return
+	}
+
+	const hardened = hdkeychain.HardenedKeyStart
+
+	btcPath := []uint32{44 + hardened, 0 + hardened, 0 + hardened, 0, 0}
+	btcKey, err := deriveChild(masterKey, btcPath)
+	if err != nil {
+		fmt.Println("派生 BTC 扩展密钥失败:", err)
+		return
+	}
+	btcAddr, btcWIF, err := btcAddressFromKey(btcKey)
+	if err != nil {
+		fmt.Println("生成 BTC 地址失败:", err)
+		return
+	}
+
+	ethPath := []uint32{44 + hardened, 60 + hardened, 0 + hardened, 0, 0}
+	ethKey, err := deriveChild(masterKey, ethPath)
+	if err != nil {
+		fmt.Println("派生 ETH 扩展密钥失败:", err)
+		return
+	}
+	ethAddr, ethPrivHex, err := ethAddressFromKey(ethKey)
+	if err != nil {
+		fmt.Println("生成 ETH 地址失败:", err)
+		return
+	}
+
+	fmt.Println("BTC 地址 (m/44'/0'/0'/0/0):", btcAddr)
+	fmt.Println("BTC 私钥 (WIF, compressed):", btcWIF)
+	fmt.Println("ETH 地址 (m/44'/60'/0'/0/0):", ethAddr)
+	fmt.Println("ETH 私钥 (hex):", ethPrivHex)
+	fmt.Println("USDT (ERC20/主网与 ETH 地址一致):", ethAddr)
 }
