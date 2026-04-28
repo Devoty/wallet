@@ -7,7 +7,7 @@ import (
 	"github.com/tyler-smith/go-bip39"
 )
 
-func main() {
+func main1() {
 	// 原始秘密
 	secret := []byte("This is a super secret message!")
 
